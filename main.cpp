@@ -135,6 +135,45 @@ Config parse_config()
 }
 
 /**
+ * @brief (NEW) Parses a .gitignore file and returns a vector of exclusion patterns.
+ * This is a simplified parser: it ignores comments, empty lines, and negations (!).
+ */
+std::vector<std::string> parse_gitignore(const fs::path &gitignore_path)
+{
+	std::vector<std::string> patterns;
+	std::ifstream gitignore_file(gitignore_path);
+
+	if (!gitignore_file.is_open())
+	{
+		return patterns; // No file, no patterns
+	}
+
+	std::string line;
+	while (std::getline(gitignore_file, line))
+	{
+		line = trim(line);
+		if (line.empty() || line[0] == '#')
+		{
+			continue;
+		}
+		if (line[0] == '!')
+		{
+			// Negation is not supported in this simple parser
+			continue;
+		}
+		// Strip leading / for root-level patterns, as our matching is always relative
+		if (line[0] == '/')
+		{
+			line = line.substr(1);
+		}
+
+		// Add the pattern to be processed
+		patterns.push_back(line);
+	}
+	return patterns;
+}
+
+/**
  * @brief Implements the new pattern matching logic from README/TODO.
  * @param rel_path_str The path relative to the root, using '/' separators.
  * @param filename_str The final component (filename) of the path.
@@ -338,6 +377,7 @@ void show_usage(const char *prog_name)
 	std::cerr << "  directory_path...: One or more target directories (defaults to current)." << std::endl;
 	std::cerr << std::endl;
 	std::cerr << "Filtering Options (patterns can use wildcards like '*.cpp' or '*build*'):" << std::endl;
+	std::cerr << "  Note: Automatically respects .gitignore files in target directories." << std::endl;
 	std::cerr << "  Note: File extensions (e.g., .o, .cpp) are automatically treated as (*.o, *.cpp)." << std::endl;
 	std::cerr << std::endl;
 	std::cerr << "  -e,  --exclude <p...>: Exclude from BOTH list and print (e.g., -e build/ .o .a)." << std::endl;
@@ -346,13 +386,15 @@ void show_usage(const char *prog_name)
 	std::cerr << "  -le, -el, --list-exclude <p...>: Exclude from LIST (tree view) only (e.g., -le .git/)." << std::endl;
 	std::cerr << "  -pi, -ip, --print-include <p...>: Only PRINT files matching pattern (e.g., -pi .cpp .h)." << std::endl;
 	std::cerr << "  -pe, -ep, --print-exclude <p...>: Exclude from PRINT only (e.g., -pe .min.js)." << std::endl;
+	std::cerr << "  --no-gitignore       : Disable automatic .gitignore parsing." << std::endl;
 	std::cerr << "  -h,  --help            : Show this help message." << std::endl;
 	std::cerr << std::endl;
 	std::cerr << "Examples:" << std::endl;
-	std::cerr << "  " << prog_name << "                        # List and print all in current dir" << std::endl;
-	std::cerr << "  " << prog_name << " /src/backend /src/frontend -e node_modules/ -ip .java .cpp" << std::endl;
+	std::cerr << "  " << prog_name << "                        # List/print all (respecting .gitignore)" << std::endl;
+	std::cerr << "  " << prog_name << " --no-gitignore          # List/print all (ignoring .gitignore)" << std::endl;
+	std::cerr << "  " << prog_name << " /src/backend -ip .java  # Scan /src/backend, print only .java files" << std::endl;
 	std::cerr << "  " << prog_name << " -e build/ -i build/main.js # Exclude 'build' dir, but still show 'build/main.js'" << std::endl;
-	std::cerr << "  " << prog_name << " -e build/ .o .a '*.neblib' # Exclude 'build' dir, all .o/.a files, and *.neblib" << std::endl;
+	std::cerr << "  " << prog_name << " -e .o .a '*.neblib'       # Exclude all .o/.a files and *.neblib" << std::endl;
 }
 
 /**
@@ -396,6 +438,7 @@ int main(int argc, char *argv[])
 	std::vector<fs::path> target_paths;
 	Filters filters;
 	int first_flag_idx = argc;
+	bool respect_gitignore = true; // (NEW) Default to true
 
 	// Find first flag
 	for (int i = 1; i < argc; ++i)
@@ -406,10 +449,17 @@ int main(int argc, char *argv[])
 			show_usage(argv[0]);
 			return 0;
 		}
+		if (arg == "--no-gitignore")
+		{
+			respect_gitignore = false;
+			// Don't set first_flag_idx, as this is a flag
+		}
 		if (arg[0] == '-' && arg.length() > 1)
 		{ // Found a flag
-			first_flag_idx = i;
-			break;
+			if (first_flag_idx == argc)
+			{ // Only set on the first flag found
+				first_flag_idx = i;
+			}
 		}
 	}
 
@@ -481,6 +531,11 @@ int main(int argc, char *argv[])
 				filters.print_excludes.push_back(process_pattern_arg(argv[i]));
 			}
 		}
+		else if (arg == "--no-gitignore")
+		{
+			// Already handled, just skip
+			continue;
+		}
 		else if (arg[0] == '.')
 		{
 			// Backwards compatibility for: catlr . .txt .md
@@ -512,17 +567,36 @@ int main(int argc, char *argv[])
 			continue; // Skip to next path
 		}
 
-		// --- 4a. Directory Tree Listing ---
+		// --- 5. (NEW) Parse .gitignore ---
+		// We make a copy of the filters for each path, as gitignore is per-path
+		Filters path_filters = filters;
+		if (respect_gitignore)
+		{
+			fs::path gitignore_path = target_path / ".gitignore";
+			if (fs::exists(gitignore_path))
+			{
+				std::vector<std::string> gitignore_patterns = parse_gitignore(gitignore_path);
+				for (const auto &pattern : gitignore_patterns)
+				{
+					std::string processed = process_pattern_arg(pattern);
+					// Add gitignore patterns to both list and print excludes
+					path_filters.list_excludes.push_back(processed);
+					path_filters.print_excludes.push_back(processed);
+				}
+			}
+		}
+
+		// --- 6a. Directory Tree Listing ---
 		std::cout << "--- Directory Tree for: " << target_path.filename().string() << " ---" << std::endl;
 		std::cout << "Located at: " << target_path.string() << std::endl
 				  << std::endl;
 
 		if (use_external_tree)
 		{
-			if (!filters.list_includes.empty() || !filters.list_excludes.empty())
+			if (!path_filters.list_includes.empty() || !path_filters.list_excludes.empty())
 			{
 				std::cout << "Info: External 'tree' command does not support filters. Using built-in tree." << std::endl;
-				print_tree_native(target_path, filters);
+				print_tree_native(target_path, path_filters);
 			}
 			else
 			{
@@ -533,11 +607,11 @@ int main(int argc, char *argv[])
 		else
 		{
 			std::cout << "Info: '" << config.tree_command << "' not found. Using built-in tree implementation." << std::endl;
-			print_tree_native(target_path, filters);
+			print_tree_native(target_path, path_filters);
 		}
 		std::cout << std::endl;
 
-		// --- 4b. Recursive File Content Listing ---
+		// --- 6b. Recursive File Content Listing ---
 		std::cout << "--- File Contents (Recursive) for: " << target_path.filename().string() << " ---" << std::endl;
 
 		try
@@ -548,7 +622,7 @@ int main(int argc, char *argv[])
 				try
 				{
 					// 1. Check LIST exclusion (to skip recursion)
-					if (entry.is_directory() && !matches_filters(entry.path(), target_path, filters.list_includes, filters.list_excludes))
+					if (entry.is_directory() && !matches_filters(entry.path(), target_path, path_filters.list_includes, path_filters.list_excludes))
 					{
 						it.disable_recursion_pending(); // C++17: Don't recurse
 						continue;
@@ -562,7 +636,7 @@ int main(int argc, char *argv[])
 					fs::path current_path = entry.path();
 
 					// 2. Check PRINT filtering
-					if (matches_filters(current_path, target_path, filters.print_includes, filters.print_excludes))
+					if (matches_filters(current_path, target_path, path_filters.print_includes, path_filters.print_excludes))
 					{
 						fs::path relative_path = fs::relative(current_path, target_path);
 
