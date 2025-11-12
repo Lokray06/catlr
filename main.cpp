@@ -177,7 +177,7 @@ bool pattern_matches(const std::string &rel_path_str, const std::string &filenam
 	// 2. Direct Matching
 	if (pattern.back() == '/')
 	{
-		// This is the bug fix.
+		// FIX: Handle directory matches correctly
 		// Pattern is "build/"
 		std::string dir_pattern = pattern;								// "build/"
 		std::string dir_name = pattern.substr(0, pattern.length() - 1); // "build"
@@ -337,20 +337,38 @@ void show_usage(const char *prog_name)
 	std::cerr << "Arguments:" << std::endl;
 	std::cerr << "  directory_path...: One or more target directories (defaults to current)." << std::endl;
 	std::cerr << std::endl;
-	std::cerr << "Filtering Options (patterns can use wildcards like *.cpp or *build*):" << std::endl;
-	std::cerr << "  -e,  --exclude <p...>: Exclude from BOTH list and print (e.g., -e node_modules/ build/)." << std::endl;
+	std::cerr << "Filtering Options (patterns can use wildcards like '*.cpp' or '*build*'):" << std::endl;
+	std::cerr << "  Note: File extensions (e.g., .o, .cpp) are automatically treated as (*.o, *.cpp)." << std::endl;
+	std::cerr << std::endl;
+	std::cerr << "  -e,  --exclude <p...>: Exclude from BOTH list and print (e.g., -e build/ .o .a)." << std::endl;
 	std::cerr << "  -i,  --include <p...>: Include in BOTH list and print. Overrides excludes." << std::endl;
 	std::cerr << "  -li, -il, --list-include <p...>: Only LIST paths matching pattern." << std::endl;
 	std::cerr << "  -le, -el, --list-exclude <p...>: Exclude from LIST (tree view) only (e.g., -le .git/)." << std::endl;
-	std::cerr << "  -pi, -ip, --print-include <p...>: Only PRINT files matching pattern (e.g., -pi *.cpp *.h)." << std::endl;
-	std::cerr << "  -pe, -ep, --print-exclude <p...>: Exclude from PRINT only (e.g., -pe *.min.js)." << std::endl;
+	std::cerr << "  -pi, -ip, --print-include <p...>: Only PRINT files matching pattern (e.g., -pi .cpp .h)." << std::endl;
+	std::cerr << "  -pe, -ep, --print-exclude <p...>: Exclude from PRINT only (e.g., -pe .min.js)." << std::endl;
 	std::cerr << "  -h,  --help            : Show this help message." << std::endl;
 	std::cerr << std::endl;
 	std::cerr << "Examples:" << std::endl;
 	std::cerr << "  " << prog_name << "                        # List and print all in current dir" << std::endl;
-	std::cerr << "  " << prog_name << " /src/backend /src/frontend -e node_modules/ -ip *.java *.cpp" << std::endl;
+	std::cerr << "  " << prog_name << " /src/backend /src/frontend -e node_modules/ -ip .java .cpp" << std::endl;
 	std::cerr << "  " << prog_name << " -e build/ -i build/main.js # Exclude 'build' dir, but still show 'build/main.js'" << std::endl;
-	std::cerr << "  " << prog_name << " -le .git/ -pe README.md  # Hide .git from tree, skip printing README" << std::endl;
+	std::cerr << "  " << prog_name << " -e build/ .o .a '*.neblib' # Exclude 'build' dir, all .o/.a files, and *.neblib" << std::endl;
+}
+
+/**
+ * @brief NEW: Applies syntactic sugar to pattern arguments.
+ * Converts ".cpp" to "*.cpp"
+ * Leaves "build/", "*.cpp", "TODO.md" as-is.
+ */
+std::string process_pattern_arg(std::string pattern_arg)
+{
+	if (pattern_arg.length() > 1 && pattern_arg[0] == '.' &&
+		pattern_arg.find('*') == std::string::npos &&
+		pattern_arg.find('/') == std::string::npos)
+	{
+		return "*" + pattern_arg;
+	}
+	return pattern_arg;
 }
 
 int main(int argc, char *argv[])
@@ -416,8 +434,9 @@ int main(int argc, char *argv[])
 			while (i + 1 < argc && argv[i + 1][0] != '-')
 			{
 				i++;
-				filters.list_excludes.push_back(argv[i]);
-				filters.print_excludes.push_back(argv[i]);
+				std::string pattern = process_pattern_arg(argv[i]);
+				filters.list_excludes.push_back(pattern);
+				filters.print_excludes.push_back(pattern);
 			}
 		}
 		else if (arg == "-i" || arg == "--include")
@@ -425,8 +444,9 @@ int main(int argc, char *argv[])
 			while (i + 1 < argc && argv[i + 1][0] != '-')
 			{
 				i++;
-				filters.list_includes.push_back(argv[i]);
-				filters.print_includes.push_back(argv[i]);
+				std::string pattern = process_pattern_arg(argv[i]);
+				filters.list_includes.push_back(pattern);
+				filters.print_includes.push_back(pattern);
 			}
 		}
 		else if (arg == "-li" || arg == "--list-include" || arg == "-il")
@@ -434,7 +454,7 @@ int main(int argc, char *argv[])
 			while (i + 1 < argc && argv[i + 1][0] != '-')
 			{
 				i++;
-				filters.list_includes.push_back(argv[i]);
+				filters.list_includes.push_back(process_pattern_arg(argv[i]));
 			}
 		}
 		else if (arg == "-le" || arg == "--list-exclude" || arg == "-el")
@@ -442,7 +462,7 @@ int main(int argc, char *argv[])
 			while (i + 1 < argc && argv[i + 1][0] != '-')
 			{
 				i++;
-				filters.list_excludes.push_back(argv[i]);
+				filters.list_excludes.push_back(process_pattern_arg(argv[i]));
 			}
 		}
 		else if (arg == "-pi" || arg == "--print-include" || arg == "-ip")
@@ -450,7 +470,7 @@ int main(int argc, char *argv[])
 			while (i + 1 < argc && argv[i + 1][0] != '-')
 			{
 				i++;
-				filters.print_includes.push_back(argv[i]);
+				filters.print_includes.push_back(process_pattern_arg(argv[i]));
 			}
 		}
 		else if (arg == "-pe" || arg == "--print-exclude" || arg == "-ep")
@@ -458,13 +478,13 @@ int main(int argc, char *argv[])
 			while (i + 1 < argc && argv[i + 1][0] != '-')
 			{
 				i++;
-				filters.print_excludes.push_back(argv[i]);
+				filters.print_excludes.push_back(process_pattern_arg(argv[i]));
 			}
 		}
 		else if (arg[0] == '.')
 		{
 			// Backwards compatibility for: catlr . .txt .md
-			filters.print_includes.push_back(arg);
+			filters.print_includes.push_back(process_pattern_arg(arg));
 		}
 		else if (arg[0] == '-')
 		{
